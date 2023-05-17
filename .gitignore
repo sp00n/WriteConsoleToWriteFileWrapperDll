@@ -1,0 +1,5 @@
+*.git-credentials
+.vs/
+**/Debug/
+**/Release/
+**/x64/
