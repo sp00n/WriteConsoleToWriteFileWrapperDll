@@ -3,8 +3,13 @@
 #include <ctime>
 #include <stdio.h>
 #include <string>
+#include <iostream>
+#include <iomanip>
+#include <sstream>
 #include <windows.h>
+#include <regex>
 #include "detours.h"
+
 
 
 // Create a file handle to write to
@@ -21,33 +26,6 @@ static BOOL(WINAPI * originalWriteConsoleW)(HANDLE, const VOID*, DWORD, LPDWORD,
 // Hook WriteConsoleW with a call to WriteFile
 BOOL WINAPI HookedWriteConsoleW(HANDLE hConsoleOutput, const VOID* lpBuffer, DWORD nNumberOfCharsToWrite, LPDWORD lpNumberOfCharsWritten, LPVOID lpReserved)
 {
-    /*
-    // Get the current system time
-    auto currentTime = std::chrono::system_clock::now();
-
-    // Convert the system time to a time_t object
-    std::time_t currentTime_t = std::chrono::system_clock::to_time_t(currentTime);
-
-    // Convert the time_t object to a string representation
-    char timestamp[100];
-    tm localTime;
-    if (localtime_s(&localTime, &currentTime_t) == 0)
-    {
-        std::strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", &localTime);
-    }
-    else
-    {
-        // Error handling for localtime_s failure
-        // You can choose to skip the timestamp in case of failure or handle it differently
-        // For simplicity, we will use an empty string as the timestamp in case of failure
-        timestamp[0] = '\0';
-    }
-
-    // Convert the timestamp to a wide string
-    std::wstring wideTimestamp(timestamp, timestamp + strlen(timestamp));
-    */
-    
-
     DWORD bytesWritten;
     DWORD bytesWrittenToFile;
     auto bytesToWrite = sizeof(WCHAR) * wcslen((LPCWSTR)lpBuffer);
@@ -148,16 +126,48 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD dwReason, LPVOID reserved)
         // Search for the "/dlllog:" argument and extract the file name
         std::wstring argPrefix = L"/dlllog:";
         size_t argIndex = dllArgument.find(argPrefix);
+        
         if (argIndex != std::wstring::npos) {
-            g_logFileName = dllArgument.substr(argIndex + argPrefix.length());
+            std::wstring logFileNamePre = dllArgument.substr(argIndex + argPrefix.length());
             
+            // There may be a stray double quote at the end if the name contains a space, remove it (resp. all of them)
+            g_logFileName = std::regex_replace(logFileNamePre, std::wregex(L"\""), L"");
         }
         else {
             g_logFileName = L"defaultLogFile.txt";
         }
 
-        hFile = CreateFile(g_logFileName.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        hFile = CreateFileW(g_logFileName.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 
+        if (hFile == INVALID_HANDLE_VALUE) {
+            DWORD errorCode = GetLastError();
+            wprintf(L"Could not create the file handle: %ld\n", errorCode);
+        }
+        else {
+            // Set the file pointer to the end of the file (not sure if really necessary)
+            DWORD dwMoved = ::SetFilePointer(hFile, 0l, nullptr, FILE_END);
+            if (dwMoved == INVALID_SET_FILE_POINTER) {
+                wprintf(L"Could not set file pointer to end-of-file.\n");
+            }
+
+
+            // Add an initial timestamp when opening the file
+            // E.g. for a new log file or when the stress test program is restarted and appends to the same log file
+
+            // Get the current system time
+            auto now = std::chrono::system_clock::now();
+            std::time_t currentTime = std::chrono::system_clock::to_time_t(now);
+
+            std::tm timeinfo;
+            localtime_s(&timeinfo, &currentTime);
+            std::ostringstream oss;
+            oss << "\n\n" << std::put_time(&timeinfo, "%Y-%m-%d %H:%M:%S") << "\n";
+            std::string timestamp = oss.str();
+
+            DWORD bytesWritten;
+            WriteFile(hFile, timestamp.c_str(), static_cast<DWORD>(timestamp.size()), &bytesWritten, nullptr);
+            FlushFileBuffers(hFile);
+        }
     }
     else if (dwReason == DLL_PROCESS_DETACH) {
         DetourTransactionBegin();
